@@ -1,7 +1,11 @@
 #pragma once
 #include "Forces.hpp"
 #include "GameData.hpp"
+#include "SFML/Graphics/Color.hpp"
 #include "SFML/System/Vector2.hpp"
+#include "SFML/Window/Event.hpp"
+#include "SFML/Window/Keyboard.hpp"
+#include "entt/entity/fwd.hpp"
 #include <cmath>
 #include <entt/entt.hpp>
 #include <fmt/format.h>
@@ -19,17 +23,28 @@ struct GameManager {
   entt::registry registry;
   tf::Executor executor;
   std::function<sf::Vector2f(sf::Vector2f)> force_function;
+  int fontSize = 12;
   float deltaTime = 1.0f / 60.0f;
   float accumulatorTime = 0.0f;
-  float temperature = 3;
+  float temperature;
+  float Q;
+  float displayTemp;
   float zeta = 0.0;
   float gamma = 10.0;
   float xi = 0.00;
-  float Q = 5.0f;
   bool useThermostat = true;
-  bool thermoNoise = false;
+  bool useTrap = true;
+  bool useThermoNoise = true;
+  bool useGravity = false;
+
   Forces::RandomForce<5> rf;
-  sf::Text statusText;
+  sf::Text thermostatStatusText;
+  sf::Text thermostatTempText;
+  sf::Text deltatimeStatusText;
+  sf::Text trapStatusText;
+  sf::Text gravityStatusText;
+  GameData::Momentum averageMomentum;
+
   sf::Font font;
   size_t timeWarp = 1;
   std::vector<std::mt19937> rnd;
@@ -41,14 +56,32 @@ struct GameManager {
       throw std::runtime_error(
           "Couldn't load file ./resources/Inconsolata-Regular.ttf");
     }
-    statusText.setFont(font);
-    statusText.setFillColor(sf::Color::Red);
-    statusText.setCharacterSize(24);
+    thermostatTempText.setFont(font);
+    thermostatTempText.setFillColor(sf::Color::Red);
+    thermostatTempText.setCharacterSize(fontSize);
+    thermostatStatusText.setFont(font);
+    thermostatStatusText.setFillColor(sf::Color::Red);
+    thermostatStatusText.setCharacterSize(fontSize);
+    deltatimeStatusText.setFont(font);
+    deltatimeStatusText.setFillColor(sf::Color::Red);
+    deltatimeStatusText.setCharacterSize(fontSize);
+    trapStatusText.setFont(font);
+    trapStatusText.setFillColor(sf::Color::Red);
+    trapStatusText.setCharacterSize(fontSize);
+    gravityStatusText.setFont(font);
+    gravityStatusText.setFillColor(sf::Color::Red);
+    gravityStatusText.setCharacterSize(fontSize);
+
+    thermostatTempText.setPosition(0, fontSize);
+    deltatimeStatusText.setPosition(0, 2 * fontSize);
+    trapStatusText.setPosition(0, 3 * fontSize);
+    gravityStatusText.setPosition(0, 4 * fontSize);
+
     sf::ContextSettings settings;
     settings.antialiasingLevel = 4;
-    window = std::make_unique<sf::RenderWindow>(sf::VideoMode(width + 10, height + 10),
-                                                "HelloSFML", sf::Style::Default,
-                                                settings);
+    window = std::make_unique<sf::RenderWindow>(
+        sf::VideoMode(width + 10, height + 10), "HelloSFML", sf::Style::Default,
+        settings);
     clock = sf::Clock();
     rnd = std::vector<std::mt19937>(executor.num_workers());
     std::random_device rd;
@@ -76,14 +109,15 @@ struct GameManager {
     //   const auto t2 = 1.0f / powf(7.0f / 4 + r, 2.0f);
     //   return 15.0f * e * (t1 + t2);
     // };
+    setTemp(3.0f);
     createWorld();
   }
 
   void createWorld() {
-
+    zeta = 0.0f;
     std::uniform_real_distribution<float> dist_x(0, width);
     std::uniform_real_distribution<float> dist_y(0, height);
-
+    registry = entt::registry();
     for (size_t i = 0; i < numParticles; i++) {
 
       const auto entity = registry.create();
@@ -125,25 +159,97 @@ struct GameManager {
       if (event.type == sf::Event::Closed) {
         window->close();
       }
+
+      if (event.type == sf::Event::KeyPressed) {
+        if (event.key.code == sf::Keyboard::T) {
+          useThermostat = !useThermostat;
+          zeta = 0.0f;
+        }
+
+        if (event.key.code == sf::Keyboard::F) {
+          useTrap = !useTrap;
+        }
+
+        if (event.key.code == sf::Keyboard::G) {
+          useGravity = !useGravity;
+        }
+
+        if (event.key.code == sf::Keyboard::R) {
+          createWorld();
+        }
+
+        if (event.key.code == sf::Keyboard::N) {
+          useThermoNoise = !useThermoNoise;
+        }
+      }
     }
   }
 
-  void draw(sf::CircleShape &circle, const GameData::Position &position) {
+  void drawShape(sf::CircleShape &circle, const GameData::Position &position,
+                 const GameData::Momentum &momentum) {
+    const int r = std::floorf(
+        255 * (1 - expf(-0.1f * Forces::norm(momentum - averageMomentum))));
+    const int g =
+        std::floorf(255 * (1 - expf(-0.25f * Forces::norm(averageMomentum))));
+    circle.setFillColor(sf::Color(r, g, 255, 255));
     circle.setPosition(position);
     window->draw(circle);
   }
 
   void render() {
     window->clear(sf::Color::Black);
-    auto view = registry.view<sf::CircleShape, const GameData::Position>();
+    auto view = registry.view<sf::CircleShape, const GameData::Position,
+                              const GameData::Momentum>();
+    averageMomentum = GameData::Momentum();
+    displayTemp = 0.0f;
+    for (auto [entity, circle, position, momentum] : view.each()) {
+      averageMomentum += momentum;
+      displayTemp += (momentum.x * momentum.x + momentum.y * momentum.y) /
+                     (2 * numParticles);
+    }
+    averageMomentum /= (float)numParticles;
 
-    for (auto [entity, circle, position] : view.each()) {
-      draw(circle, position);
+    for (auto [entity, circle, position, momentum] : view.each()) {
+      drawShape(circle, position, momentum);
     }
 
-    statusText.setString(fmt::format("Target temp = {:4f}", temperature));
-    window->draw(statusText);
+    const auto thermoBool = useThermostat ? "ON" : "OFF";
+    const auto noiseBool = useThermoNoise ? "ON" : "OFF";
+
+    thermostatStatusText.setString(
+        fmt::format("Thermostat: {}, Noise: {}", thermoBool, noiseBool));
+
+    if (useTrap) {
+      trapStatusText.setString("Harmonic trap: ON");
+    } else {
+      trapStatusText.setString("Harmonic trap: OFF");
+    }
+
+    if (useGravity) {
+      gravityStatusText.setString("Gravity: ON");
+    } else {
+      gravityStatusText.setString("Gravity: OFF");
+    }
+
+    thermostatTempText.setString(fmt::format(
+        "Target temp = {:4f}, Actual = {:4f}", temperature, displayTemp));
+    deltatimeStatusText.setString(fmt::format("dt = {:4f} s", deltaTime));
+
+    window->draw(thermostatStatusText);
+    window->draw(thermostatTempText);
+    window->draw(deltatimeStatusText);
+    window->draw(trapStatusText);
+    window->draw(gravityStatusText);
     window->display();
+  }
+
+  void setTemp(const float &newTemp) {
+    temperature = newTemp;
+    if (newTemp < 10.0f) {
+      Q = 10.0f;
+    } else {
+      Q = newTemp;
+    }
   }
 
   void updateForces() {
@@ -153,21 +259,25 @@ struct GameManager {
     const auto viewOther =
         registry.view<const GameData::Particle, const GameData::Position>();
     tf::Taskflow taskflow;
-    const auto ff = force_function;
-    const float w = width;
-    const float h = height;
     taskflow.for_each(viewForce.begin(), viewForce.end(),
-                      [&viewForce, &viewOther, &ff, w, h](auto entity) {
+                      [&viewForce, &viewOther, this](auto entity) {
                         auto [p1, x1, force] = viewForce.get(entity);
-                        const auto r = x1 - sf::Vector2f(0.5f * w, 0.5f * h);
+                        const auto r =
+                            x1 - sf::Vector2f(0.5f * width, 0.5f * height);
 
                         force = GameData::Force();
-                        force += -0.02f * r;
+                        if (useTrap) {
+                          force += -0.02f * r;
+                        }
+
+                        if (useGravity) {
+                          force += sf::Vector2f(0, 10);
+                        }
                         for (auto [other, p2, x2] : viewOther.each()) {
                           if (other == entity) {
                             continue;
                           }
-                          force += ff(x1 - x2);
+                          force += force_function(x1 - x2);
                         }
                       });
     executor.run(taskflow).wait();
@@ -202,29 +312,24 @@ struct GameManager {
                               GameData::Momentum, const GameData::Force>();
 
     tf::Taskflow taskflow;
-    const auto dt = deltaTime;
-    const auto w = width;
-    const auto h = height;
 
     const float targetEnergy = 2 * numParticles * temperature;
     std::atomic<float> actualEnergy = 0.0;
-    bool thermos = useThermostat;
     taskflow.for_each(
-        view.begin(), view.end(),
-        [&view, dt, w, h, &actualEnergy, thermos](auto entity) {
+        view.begin(), view.end(), [&view, &actualEnergy, this](auto entity) {
           auto [particle, position, momentum, force] = view.get(entity);
-          if (thermos) {
+          if (useThermostat) {
             const auto deltaEnergy =
-                (momentum.x * momentum.x + momentum.y + momentum.y) /
+                (momentum.x * momentum.x + momentum.y * momentum.y) /
                 particle.mass;
             auto energy = actualEnergy.load();
             while (!actualEnergy.compare_exchange_weak(energy,
                                                        energy + deltaEnergy))
               ;
           }
-          position += dt * momentum / particle.mass;
-          while (outOfBonds(position, (float)w, (float)h)) {
-            reflect(position, momentum, (float)w, (float)h);
+          position += deltaTime * momentum / particle.mass;
+          while (outOfBonds(position, (float)width, (float)height)) {
+            reflect(position, momentum, (float)width, (float)height);
           }
         });
 
@@ -235,27 +340,22 @@ struct GameManager {
       std::normal_distribution<float> dist(0.0, deltaTime);
       dzeta += sqrtf(2 * temperature * gamma / Q) * dist(rnd[0]);
       zeta += dzeta;
-    } else {
-      zeta = 0.0f;
     }
   }
 
   void integrateMomentum() {
     auto view = registry.view<GameData::Momentum, const GameData::Force>();
     tf::Taskflow taskflow;
-    const auto dt = deltaTime;
-    const auto xi = zeta;
-    auto rptr = &rnd;
-    auto eptr = &executor;
-    taskflow.for_each(
-        view.begin(), view.end(), [&view, dt, xi, this](auto entity) {
-          auto [momentum, force] = view.get(entity);
-          std::normal_distribution<float> dist(0.0, xi * dt);
-          const auto dx = thermoNoise ? dist(rnd[executor.this_worker_id()]) : 0.0f;
-          const auto dy = thermoNoise ? dist(rnd[executor.this_worker_id()]) : 0.0f;
-          momentum += dt * (force - xi * momentum) + sf::Vector2f(dx, dy);
-        });
-
+    taskflow.for_each(view.begin(), view.end(), [&view, this](auto entity) {
+      auto [momentum, force] = view.get(entity);
+      std::normal_distribution<float> dist(0.0, zeta * deltaTime);
+      const auto p = Forces::norm(momentum);
+      const auto dx =
+          useThermoNoise ? dist(rnd[executor.this_worker_id()]) : 0.0f;
+      const auto dy =
+          useThermoNoise ? dist(rnd[executor.this_worker_id()]) : 0.0f;
+      momentum += deltaTime * (force - zeta * momentum) + sf::Vector2f(dx, dy);
+    });
     executor.run(taskflow).wait();
   }
 
@@ -276,10 +376,9 @@ struct GameManager {
       const auto dst = 0.1f;
       currentTime = std::min(currentTime, dst / spd);
     }
-    auto dxi = abs((actualEnergy - targetEnergy)/ Q - gamma * zeta);
-    if(dxi > 0.00001f && useThermostat) {
-      currentTime =
-          std::min(currentTime, 1.0f / dxi);
+    auto dxi = abs((actualEnergy - targetEnergy) / Q - gamma * zeta);
+    if (dxi > 0.00001f && useThermostat) {
+      currentTime = std::min(currentTime, 1.0f / dxi);
     }
 
     deltaTime = currentTime;
@@ -287,15 +386,20 @@ struct GameManager {
 
   void handleKeyboard() {
     float tempDelta = 0.0f;
+    float tempIncrement = 0.5f;
+    if (sf::Keyboard::isKeyPressed(sf::Keyboard::LShift) ||
+        sf::Keyboard::isKeyPressed(sf::Keyboard::RShift)) {
+      tempIncrement = 100.0f;
+    }
     if (sf::Keyboard::isKeyPressed(sf::Keyboard::Up)) {
-      tempDelta += 50.0f * deltaTime;
+      tempDelta += tempIncrement * deltaTime;
     }
 
     if (sf::Keyboard::isKeyPressed(sf::Keyboard::Down)) {
-      tempDelta -= 50.0f * deltaTime;
+      tempDelta -= tempIncrement * deltaTime;
     }
-    temperature = std::min(temperature + tempDelta, 10000.0f);
-    temperature = std::max(temperature, 0.001f);
+    setTemp(std::min(temperature + tempDelta, 10000.0f));
+    setTemp(std::max(temperature, 0.001f));
   }
 
   void fixedUpdate() {
@@ -309,8 +413,9 @@ struct GameManager {
   void update() {
     const auto elapsed = clock.restart();
     accumulatorTime += elapsed.asSeconds();
-    accumulatorTime = std::max(accumulatorTime, 3.0f/60.0f);
-    while (accumulatorTime >= deltaTime && clock.getElapsedTime().asSeconds() < 1.0f/60.0f) {
+    accumulatorTime = std::max(accumulatorTime, 1.0f / 60.0f);
+    while (accumulatorTime >= deltaTime &&
+           clock.getElapsedTime().asSeconds() < 1.0f / 60.0f) {
       fixedUpdate();
       accumulatorTime -= deltaTime;
     }
