@@ -22,7 +22,7 @@ namespace game {
 struct GridPos {
   int x = 0;
   int y = 0;
-  GridPos() {};
+  GridPos(){};
   GridPos(int x, int y) : x(x), y(y){};
 };
 
@@ -60,10 +60,10 @@ struct GameManager {
   sf::Font font;
   size_t timeWarp = 1;
   std::vector<std::mt19937> rnd;
-  size_t numParticles = 800;
+  size_t numParticles = 1600;
   size_t cellSize = 100;
-  size_t cellsX = 8, cellsY = 6;
-  std::vector<std::unordered_set<entt::entity>> grid; // using stride indexing
+  size_t cellsX = 16, cellsY = 8;
+  std::vector<std::vector<entt::entity>> grid; // using stride indexing
   float width, height;
 
   GameManager() {
@@ -75,7 +75,7 @@ struct GameManager {
     setupText();
     width = cellsX * cellSize;
     height = cellsY * cellSize;
-    grid = std::vector<std::unordered_set<entt::entity>>(cellsX * cellsY);
+    grid = std::vector<std::vector<entt::entity>>(cellsX * cellsY);
 
     sf::ContextSettings settings;
     settings.antialiasingLevel = 4;
@@ -98,8 +98,12 @@ struct GameManager {
   };
 
   const GridPos getGridLoc(const GameData::Position &position) const {
-    const int x = std::floorf(position.x / cellSize);
-    const int y = std::floorf(position.y / cellSize);
+    int x = std::floorf(position.x / cellSize);
+    int y = std::floorf(position.y / cellSize);
+    if(x < 0) x = 0;
+    if(y < 0) y = 0;
+    if(x >= cellsX) x = cellsX - 1;
+    if(y >= cellsY) y = cellsY - 1;
 
     return GridPos(x, y);
   };
@@ -128,14 +132,14 @@ struct GameManager {
   };
 
   void updateGrid() {
-    for (auto set : grid) {
-      set = std::unordered_set<entt::entity>();
+    for (auto &list : grid) {
+      list.clear();
     }
 
     auto view = registry.view<const GameData::Position, GridPos>();
     for (auto [entity, position, gridPos] : view.each()) {
       gridPos = getGridLoc(position);
-      grid[gridPos.x + cellsX * gridPos.y].insert(entity);
+      grid[gridPos.x + cellsX * gridPos.y].push_back(entity);
     }
   };
 
@@ -333,7 +337,8 @@ struct GameManager {
                           if (other == entity) {
                             continue;
                           }
-                          const auto x2 = registry.get<GameData::Position>(other);
+                          const auto x2 =
+                              registry.get<GameData::Position>(other);
                           force += force_function(x1 - x2);
                         }
                       });
