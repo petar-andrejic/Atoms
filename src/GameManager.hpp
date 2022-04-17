@@ -14,9 +14,18 @@
 #include <random>
 #include <stdexcept>
 #include <taskflow/taskflow.hpp>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace game {
+struct GridPos {
+  int x = 0;
+  int y = 0;
+  GridPos() {};
+  GridPos(int x, int y) : x(x), y(y){};
+};
+
 struct GameManager {
   std::unique_ptr<sf::RenderWindow> window;
   sf::Clock clock;
@@ -24,6 +33,7 @@ struct GameManager {
   tf::Executor executor;
   std::function<sf::Vector2f(sf::Vector2f)> force_function;
   int fontSize = 12;
+
   float deltaTime = 1.0f / 60.0f;
   float accumulatorTime = 0.0f;
   float temperature;
@@ -32,6 +42,7 @@ struct GameManager {
   float zeta = 0.0;
   float gamma = 10.0;
   float xi = 0.00;
+
   bool useThermostat = true;
   bool useTrap = true;
   bool useThermoNoise = true;
@@ -43,19 +54,57 @@ struct GameManager {
   sf::Text deltatimeStatusText;
   sf::Text trapStatusText;
   sf::Text gravityStatusText;
+
   GameData::Momentum averageMomentum;
 
   sf::Font font;
   size_t timeWarp = 1;
   std::vector<std::mt19937> rnd;
-  const size_t numParticles = 800;
-  const size_t width = 800, height = 600;
+  size_t numParticles = 800;
+  size_t cellSize = 100;
+  size_t cellsX = 8, cellsY = 6;
+  std::vector<std::unordered_set<entt::entity>> grid; // using stride indexing
+  float width, height;
 
   GameManager() {
     if (!font.loadFromFile("./resources/Inconsolata-Regular.ttf")) {
       throw std::runtime_error(
           "Couldn't load file ./resources/Inconsolata-Regular.ttf");
     }
+
+    setupText();
+    width = cellsX * cellSize;
+    height = cellsY * cellSize;
+    grid = std::vector<std::unordered_set<entt::entity>>(cellsX * cellsY);
+
+    sf::ContextSettings settings;
+    settings.antialiasingLevel = 4;
+    window = std::make_unique<sf::RenderWindow>(
+        sf::VideoMode(cellsX * cellSize + 10, cellsY * cellSize + 10),
+        "HelloSFML", sf::Style::Default, settings);
+    clock = sf::Clock();
+    rnd = std::vector<std::mt19937>(executor.num_workers());
+    std::random_device rd;
+    for (size_t i = 0; i < executor.num_workers(); i++) {
+      rnd.push_back(std::mt19937(rd()));
+    }
+    registry = entt::registry();
+    rf = Forces::RandomForce<5>();
+    force_function = [](sf::Vector2f dr) {
+      return Forces::lj(dr, 0.0f, 10.0f, 2.5f);
+    };
+    setTemp(3.0f);
+    createWorld();
+  };
+
+  const GridPos getGridLoc(const GameData::Position &position) const {
+    const int x = std::floorf(position.x / cellSize);
+    const int y = std::floorf(position.y / cellSize);
+
+    return GridPos(x, y);
+  };
+
+  void setupText() {
     thermostatTempText.setFont(font);
     thermostatTempText.setFillColor(sf::Color::Red);
     thermostatTempText.setCharacterSize(fontSize);
@@ -76,42 +125,44 @@ struct GameManager {
     deltatimeStatusText.setPosition(0, 2 * fontSize);
     trapStatusText.setPosition(0, 3 * fontSize);
     gravityStatusText.setPosition(0, 4 * fontSize);
+  };
 
-    sf::ContextSettings settings;
-    settings.antialiasingLevel = 4;
-    window = std::make_unique<sf::RenderWindow>(
-        sf::VideoMode(width + 10, height + 10), "HelloSFML", sf::Style::Default,
-        settings);
-    clock = sf::Clock();
-    rnd = std::vector<std::mt19937>(executor.num_workers());
-    std::random_device rd;
-    for (size_t i = 0; i < executor.num_workers(); i++) {
-      rnd.push_back(std::mt19937(rd()));
+  void updateGrid() {
+    for (auto set : grid) {
+      set = std::unordered_set<entt::entity>();
     }
-    registry = entt::registry();
-    // force_function = [](sf::Vector2f dr) {
-    //   const auto r = Forces::norm(dr);
-    //   return 100.0f * Forces::normalize(dr) / (0.1f + r * r);
-    // };
-    rf = Forces::RandomForce<5>();
-    // force_function = [this](sf::Vector2f dr) {return rf(dr); };
-    force_function = [](sf::Vector2f dr) {
-      return Forces::lj(dr, 0.0f, 10.0f, 2.5f);
-    };
-    // force_function = [](sf::Vector2f dr) {
-    //   return Forces::vdw(dr, 5.0f, 5.0f, 0.2f);
-    // };
-    // force_function = [](sf::Vector2f dr) { return sf::Vector2f();};
-    // force_function = [](sf::Vector2f dr) {
-    //   const auto r = 5.0f * Forces::norm(dr);
-    //   const auto e = Forces::normalize(dr);
-    //   const auto t1 = -1.5f / powf(1.5f + r, 5.0f / 2);
-    //   const auto t2 = 1.0f / powf(7.0f / 4 + r, 2.0f);
-    //   return 15.0f * e * (t1 + t2);
-    // };
-    setTemp(3.0f);
-    createWorld();
-  }
+
+    auto view = registry.view<const GameData::Position, GridPos>();
+    for (auto [entity, position, gridPos] : view.each()) {
+      gridPos = getGridLoc(position);
+      grid[gridPos.x + cellsX * gridPos.y].insert(entity);
+    }
+  };
+
+  std::vector<entt::entity> neighbours(entt::entity entity) const {
+    const auto pos = registry.get<GridPos>(entity);
+    std::vector<entt::entity> v;
+    std::vector<GridPos> toCheck;
+    toCheck.reserve(9);
+
+    for (int i = -1; i < 2; i++) {
+      for (int j = -1; j < 2; j++) {
+        const auto newPos = GridPos(pos.x + i, pos.y + j);
+        if (newPos.x < cellsX && newPos.x >= 0 && newPos.y < cellsY &&
+            newPos.y >= 0) {
+          toCheck.push_back(newPos);
+        }
+      }
+    }
+
+    for (const auto &newPos : toCheck) {
+      for (auto e : grid[newPos.x + cellsX * newPos.y]) {
+        v.push_back(e);
+      }
+    }
+
+    return v;
+  };
 
   void createWorld() {
     zeta = 0.0f;
@@ -129,6 +180,7 @@ struct GameManager {
       const auto momentum = registry.emplace<GameData::Momentum>(
           entity, dist_p(rnd[0]), dist_p(rnd[0]));
       const auto force = registry.emplace<GameData::Force>(entity);
+      registry.emplace<GridPos>(entity);
       auto circle = registry.emplace<sf::CircleShape>(entity, particle.radius);
       circle.setFillColor(particle.color);
     }
@@ -151,6 +203,8 @@ struct GameManager {
         }
       }
     } while (checkCollision);
+
+    updateGrid();
   }
 
   void pollEvents() {
@@ -273,10 +327,13 @@ struct GameManager {
                         if (useGravity) {
                           force += sf::Vector2f(0, 10);
                         }
-                        for (auto [other, p2, x2] : viewOther.each()) {
+
+                        const auto others = neighbours(entity);
+                        for (auto other : others) {
                           if (other == entity) {
                             continue;
                           }
+                          const auto x2 = registry.get<GameData::Position>(other);
                           force += force_function(x1 - x2);
                         }
                       });
@@ -334,6 +391,7 @@ struct GameManager {
         });
 
     executor.run(taskflow).wait();
+    updateGrid();
     if (useThermostat) {
       auto dzeta = (actualEnergy - targetEnergy) * deltaTime / Q;
       dzeta -= gamma * zeta * deltaTime;
