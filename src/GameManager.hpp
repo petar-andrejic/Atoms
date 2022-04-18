@@ -60,7 +60,7 @@ struct GameManager {
   sf::Font font;
   size_t timeWarp = 1;
   std::vector<std::mt19937> rnd;
-  size_t numParticles = 1600;
+  size_t numParticles = 3200;
   size_t cellSize = 100;
   size_t cellsX = 16, cellsY = 8;
   std::vector<std::vector<entt::entity>> grid; // using stride indexing
@@ -100,10 +100,14 @@ struct GameManager {
   const GridPos getGridLoc(const GameData::Position &position) const {
     int x = std::floorf(position.x / cellSize);
     int y = std::floorf(position.y / cellSize);
-    if(x < 0) x = 0;
-    if(y < 0) y = 0;
-    if(x >= cellsX) x = cellsX - 1;
-    if(y >= cellsY) y = cellsY - 1;
+    if (x < 0)
+      x = 0;
+    if (y < 0)
+      y = 0;
+    if (x >= cellsX)
+      x = cellsX - 1;
+    if (y >= cellsY)
+      y = cellsY - 1;
 
     return GridPos(x, y);
   };
@@ -200,7 +204,7 @@ struct GameManager {
             continue;
           }
 
-          if (Forces::norm(pos - posOther) < 15.0f) {
+          if (Forces::norm(pos - posOther) < 10.0f) {
             pos = GameData::Position(dist_x(rnd[0]), dist_y(rnd[0]));
             checkCollision = true;
           }
@@ -437,11 +441,16 @@ struct GameManager {
       }
       const auto spd = sqrtf(p2) / particle.mass;
       const auto dst = 0.1f;
-      currentTime = std::min(currentTime, dst / spd);
+      if (spd > 0.00001f) {
+        currentTime = std::min(currentTime, dst / spd);
+      }
     }
-    auto dxi = abs((actualEnergy - targetEnergy) / Q - gamma * zeta);
-    if (dxi > 0.00001f && useThermostat) {
-      currentTime = std::min(currentTime, 1.0f / dxi);
+    if (zeta > 0.00001f && useThermostat) {
+      currentTime = std::min(currentTime, 1 / zeta);
+    }
+    auto dzeta = abs((actualEnergy - targetEnergy) / Q - gamma * zeta);
+    if (dzeta > 0.00001f && useThermostat) {
+      currentTime = std::min(currentTime, 10.0f / dzeta);
     }
 
     deltaTime = currentTime;
