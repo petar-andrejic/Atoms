@@ -60,9 +60,9 @@ struct GameManager {
   sf::Font font;
   size_t timeWarp = 1;
   std::vector<std::mt19937> rnd;
-  size_t numParticles = 3200;
-  size_t cellSize = 100;
-  size_t cellsX = 16, cellsY = 8;
+  size_t numParticles = 400;
+  size_t cellSize = 200;
+  size_t cellsX = 4, cellsY = 4;
   std::vector<std::vector<entt::entity>> grid; // using stride indexing
   float width, height;
 
@@ -90,9 +90,20 @@ struct GameManager {
     }
     registry = entt::registry();
     rf = Forces::RandomForce<5>();
+    // rf.sigma = 5.0f;
+    // force_function = [](sf::Vector2f dr) {
+    //   return Forces::lj(dr, 0.0f, 10.0f, 2.5f);
+    // };
     force_function = [](sf::Vector2f dr) {
-      return Forces::lj(dr, 0.0f, 10.0f, 2.5f);
+      // return Forces::vdw(dr, 5.0f, 5.0f, 0.00004);
+      auto force = -Forces::soft_coulomb(dr, 0.0f);
+      force += Forces::lj(dr, 0.0f, 10.0f, 2.5f);
+      // force += Forces::hertzian_sphere(dr, 10.0f, 12.0f);
+      return force;
     };
+    // force_function = [this](sf::Vector2f dr) {
+    //   return rf(dr);
+    // };
     setTemp(3.0f);
     createWorld();
   };

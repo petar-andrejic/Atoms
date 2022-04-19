@@ -45,6 +45,8 @@ inline sf::Vector2f lj(sf::Vector2f dr, float r0, float sigma, float a) {
 
 template <size_t N> struct RandomForce {
   std::array<float, N> coeffs;
+  float sigma = 5.0f;
+
 
   RandomForce() {
     std::random_device device;
@@ -59,15 +61,36 @@ template <size_t N> struct RandomForce {
   sf::Vector2f operator()(sf::Vector2f dr) const {
     auto force = sf::Vector2f();
     const auto v = normalize(dr);
-    const auto r = norm(dr);
+    const auto r = sigma * norm(dr);
     auto x = 1.0f;
     for (size_t i = 0; i < N; i++) {
       force += (coeffs[i] * x) * v;
       x *= -r;
     }
-
+  
     return force * std::expf(-0.5f * r);
   }
+  
+
 };
+
+inline sf::Vector2f hertzian_sphere(sf::Vector2f dr, float sigma, float eps) 
+{
+  const auto r = norm(dr);
+  if(r >= sigma) return sf::Vector2f();
+  return -5.0f * normalize(dr) * powf(1.0f - r/sigma, 1.5f) / (2.0f * sigma);
+}
+
+inline sf::Vector2f soft_coulomb(sf::Vector2f dr, float r0) 
+{
+  const auto r = norm(dr);
+  return -normalize(dr) / pow2(r0 + r);
+}
+
+inline sf::Vector2f screened_coulomb(sf::Vector2f dr, float r0, float alpha) 
+{
+  const auto r = norm(dr);
+  return -normalize(dr) * expf(-alpha * r) *( powf(r0 + r, -2.0) + powf(r0 + r, -1.0));
+}
 
 } // namespace Forces
