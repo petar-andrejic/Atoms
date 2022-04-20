@@ -10,3 +10,6 @@
 [submodule "taskflow"]
 	path = taskflow
 	url = https://github.com/taskflow/taskflow
+[submodule "delaunator-cpp"]
+	path = delaunator-cpp
+	url = https://github.com/delfrrr/delaunator-cpp.git
