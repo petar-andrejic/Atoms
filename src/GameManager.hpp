@@ -43,8 +43,8 @@ struct GameManager {
   float gamma = 10.0;
   float xi = 0.00;
 
-  bool useThermostat = true;
-  bool useTrap = true;
+  bool useThermostat = false;
+  bool useTrap = false;
   bool useThermoNoise = true;
   bool useGravity = false;
 
@@ -61,8 +61,8 @@ struct GameManager {
   size_t timeWarp = 1;
   std::vector<std::mt19937> rnd;
   size_t numParticles = 400;
-  size_t cellSize = 200;
-  size_t cellsX = 4, cellsY = 4;
+  size_t cellSize = 50;
+  size_t cellsX = 10, cellsY = 10;
   std::vector<std::vector<entt::entity>> grid; // using stride indexing
   float width, height;
 
@@ -96,8 +96,8 @@ struct GameManager {
     // };
     force_function = [](sf::Vector2f dr) {
       // return Forces::vdw(dr, 5.0f, 5.0f, 0.00004);
-      auto force = -Forces::soft_coulomb(dr, 0.0f);
-      force += Forces::lj(dr, 0.0f, 10.0f, 2.5f);
+      auto force = Forces::fake_harmonic(dr, 20.0f, 20.0f);
+      // force += Forces::lj(dr, 0.0f, 10.0f, 2.5f);
       // force += Forces::hertzian_sphere(dr, 10.0f, 12.0f);
       return force;
     };
