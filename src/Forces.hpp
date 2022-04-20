@@ -93,6 +93,11 @@ inline sf::Vector2f fake_harmonic(sf::Vector2f dr, float k, float r0) {
   return -k * normalize(dr) * x * expf(-x);
 }
 
+inline sf::Vector2f harmonic(sf::Vector2f dr, float k, float r0) {
+  const auto r = norm(dr);
+  const auto x = r - r0;
+  return -k * normalize(dr) * x;
+}
 
 inline sf::Vector2f screened_coulomb(sf::Vector2f dr, float r0, float alpha) 
 {

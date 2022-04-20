@@ -2,11 +2,14 @@
 #include "Forces.hpp"
 #include "GameData.hpp"
 #include "SFML/Graphics/Color.hpp"
+#include "SFML/Graphics/PrimitiveType.hpp"
 #include "SFML/System/Vector2.hpp"
 #include "SFML/Window/Event.hpp"
 #include "SFML/Window/Keyboard.hpp"
 #include "entt/entity/fwd.hpp"
 #include <cmath>
+#include <cstddef>
+#include <delaunator.hpp>
 #include <entt/entt.hpp>
 #include <fmt/format.h>
 #include <functional>
@@ -24,7 +27,24 @@ struct GridPos {
   int y = 0;
   GridPos(){};
   GridPos(int x, int y) : x(x), y(y){};
+
+  bool operator==(const GridPos &other) const {
+    return this->x == other.x && this->y == other.y;
+  }
 };
+} // namespace game
+namespace std {
+
+template <> struct hash<game::GridPos> {
+
+  size_t operator()(const game::GridPos &gp) const {
+    return (hash<int>()(gp.x) << 1) & hash<int>()(gp.y);
+  }
+};
+} // namespace std
+
+namespace game {
+struct Linked : std::unordered_set<entt::entity> {};
 
 struct GameManager {
   std::unique_ptr<sf::RenderWindow> window;
@@ -43,6 +63,7 @@ struct GameManager {
   float gamma = 10.0;
   float xi = 0.00;
 
+  bool reTriangulate = true;
   bool useThermostat = false;
   bool useTrap = false;
   bool useThermoNoise = true;
@@ -54,6 +75,7 @@ struct GameManager {
   sf::Text deltatimeStatusText;
   sf::Text trapStatusText;
   sf::Text gravityStatusText;
+  sf::Text triStatusText;
 
   GameData::Momentum averageMomentum;
 
@@ -62,7 +84,7 @@ struct GameManager {
   std::vector<std::mt19937> rnd;
   size_t numParticles = 400;
   size_t cellSize = 50;
-  size_t cellsX = 10, cellsY = 10;
+  size_t cellsX = 15, cellsY = 15;
   std::vector<std::vector<entt::entity>> grid; // using stride indexing
   float width, height;
 
@@ -96,8 +118,8 @@ struct GameManager {
     // };
     force_function = [](sf::Vector2f dr) {
       // return Forces::vdw(dr, 5.0f, 5.0f, 0.00004);
-      auto force = Forces::fake_harmonic(dr, 20.0f, 20.0f);
-      // force += Forces::lj(dr, 0.0f, 10.0f, 2.5f);
+      auto force = sf::Vector2f();
+      force += Forces::lj(dr, 0.0f, 10.0f, 2.5f);
       // force += Forces::hertzian_sphere(dr, 10.0f, 12.0f);
       return force;
     };
@@ -139,11 +161,15 @@ struct GameManager {
     gravityStatusText.setFont(font);
     gravityStatusText.setFillColor(sf::Color::Red);
     gravityStatusText.setCharacterSize(fontSize);
+    triStatusText.setFont(font);
+    triStatusText.setFillColor(sf::Color::Red);
+    triStatusText.setCharacterSize(fontSize);
 
     thermostatTempText.setPosition(0, fontSize);
     deltatimeStatusText.setPosition(0, 2 * fontSize);
     trapStatusText.setPosition(0, 3 * fontSize);
     gravityStatusText.setPosition(0, 4 * fontSize);
+    triStatusText.setPosition(0, 5 * fontSize);
   };
 
   void updateGrid() {
@@ -158,25 +184,24 @@ struct GameManager {
     }
   };
 
-  std::vector<entt::entity> neighbours(entt::entity entity) const {
+  std::unordered_set<entt::entity> neighbours(entt::entity entity) const {
     const auto pos = registry.get<GridPos>(entity);
-    std::vector<entt::entity> v;
-    std::vector<GridPos> toCheck;
-    toCheck.reserve(9);
+    std::unordered_set<entt::entity> v;
+    std::unordered_set<GridPos> toCheck;
 
     for (int i = -1; i < 2; i++) {
       for (int j = -1; j < 2; j++) {
         const auto newPos = GridPos(pos.x + i, pos.y + j);
         if (newPos.x < cellsX && newPos.x >= 0 && newPos.y < cellsY &&
             newPos.y >= 0) {
-          toCheck.push_back(newPos);
+          toCheck.insert(newPos);
         }
       }
     }
 
     for (const auto &newPos : toCheck) {
       for (auto e : grid[newPos.x + cellsX * newPos.y]) {
-        v.push_back(e);
+        v.insert(e);
       }
     }
 
@@ -202,6 +227,8 @@ struct GameManager {
       registry.emplace<GridPos>(entity);
       auto circle = registry.emplace<sf::CircleShape>(entity, particle.radius);
       circle.setFillColor(particle.color);
+
+      registry.emplace<Linked>(entity);
     }
 
     auto view = registry.view<GameData::Position>();
@@ -224,6 +251,34 @@ struct GameManager {
     } while (checkCollision);
 
     updateGrid();
+    triangulate();
+  }
+
+  void triangulate() {
+    auto view = registry.view<GameData::Position, Linked>();
+    std::vector<double> coords;
+    std::vector<entt::entity> entities;
+    coords.reserve(2 * view.size_hint());
+    entities.reserve(view.size_hint());
+    for (auto [entity, pos, linked] : view.each()) {
+      entities.push_back(entity);
+      coords.push_back(pos.x);
+      coords.push_back(pos.y);
+      linked.clear();
+    }
+
+    delaunator::Delaunator d(coords);
+
+    for (int i = 0; i < d.triangles.size(); i += 3) {
+      for (int j = 0; j < 3; j++) {
+        const auto current = entities[d.triangles[i + j]];
+        const auto next1 = entities[d.triangles[i + (j + 1) % 3]];
+        const auto next2 = entities[d.triangles[i + (j + 2) % 3]];
+        auto [pos, linked] = view.get(current);
+        linked.insert(next1);
+        linked.insert(next2);
+      }
+    }
   }
 
   void pollEvents() {
@@ -237,6 +292,10 @@ struct GameManager {
         if (event.key.code == sf::Keyboard::T) {
           useThermostat = !useThermostat;
           zeta = 0.0f;
+        }
+
+        if (event.key.code == sf::Keyboard::Q) {
+          reTriangulate = !reTriangulate;
         }
 
         if (event.key.code == sf::Keyboard::F) {
@@ -265,7 +324,8 @@ struct GameManager {
     const int g =
         std::floorf(255 * (1 - expf(-0.25f * Forces::norm(averageMomentum))));
     circle.setFillColor(sf::Color(r, g, 255, 255));
-    circle.setPosition(position);
+    circle.setPosition(position -
+                       sf::Vector2f(circle.getRadius(), circle.getRadius()));
     window->draw(circle);
   }
 
@@ -282,10 +342,18 @@ struct GameManager {
     }
     averageMomentum /= (float)numParticles;
 
+    auto lineView = registry.view<GameData::Position, Linked>();
+    for (auto [entity, pos, linked] : lineView.each()) {
+      for (auto other : linked) {
+        const auto posOther = registry.get<GameData::Position>(other);
+        const sf::Vertex line[] = {pos, posOther};
+        window->draw(line, 2, sf::Lines);
+      }
+    }
+
     for (auto [entity, circle, position, momentum] : view.each()) {
       drawShape(circle, position, momentum);
     }
-
     const auto thermoBool = useThermostat ? "ON" : "OFF";
     const auto noiseBool = useThermoNoise ? "ON" : "OFF";
 
@@ -296,6 +364,12 @@ struct GameManager {
       trapStatusText.setString("Harmonic trap: ON");
     } else {
       trapStatusText.setString("Harmonic trap: OFF");
+    }
+
+    if (reTriangulate) {
+      triStatusText.setString("Retriangulate: ON");
+    } else {
+      triStatusText.setString("Retriangulate: OFF");
     }
 
     if (useGravity) {
@@ -313,6 +387,7 @@ struct GameManager {
     window->draw(deltatimeStatusText);
     window->draw(trapStatusText);
     window->draw(gravityStatusText);
+    window->draw(triStatusText);
     window->display();
   }
 
@@ -508,6 +583,8 @@ struct GameManager {
     while (window->isOpen()) {
       pollEvents();
       update();
+      if (reTriangulate)
+        triangulate();
       render();
     }
   }
